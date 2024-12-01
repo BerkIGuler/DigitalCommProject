@@ -1,10 +1,9 @@
-simulate_16qam_ber()
-
-function simulate_16qam_ber()
-    % Main function to run 16-QAM BER simulation
+function simulate_mqam_ber(constellation_size)
+    % Main function to run M-QAM BER simulation
+    % Input: constellation_size - Size of QAM constellation (4, 16, 64, etc.)
     
     % Initialize parameters
-    params = initialize_parameters();
+    params = initialize_parameters(constellation_size);
     
     % Generate constellation
     [constellation_levels, normalization_factor] = ...
@@ -29,12 +28,18 @@ function simulate_16qam_ber()
     plot_results(params, number_of_bit_errors);
 end
 
-function params = initialize_parameters()
+function params = initialize_parameters(constellation_size)
     % Initialize simulation parameters
     params = struct();
     params.number_of_symbols = 10^5;
-    params.constellation_size = 16;
+    params.constellation_size = constellation_size;
     params.bits_per_symbol = log2(params.constellation_size);
+    
+    % Verify valid constellation size
+    if mod(log2(constellation_size), 1) ~= 0 || constellation_size < 4
+        error('Constellation size must be a power of 2 and >= 4');
+    end
+    
     params.eb_n0_db = 0:15;
     params.es_n0_db = params.eb_n0_db + ...
         10 * log10(params.bits_per_symbol);
@@ -42,21 +47,24 @@ end
 
 function [constellation_levels, normalization_factor] = ...
         generate_constellation(constellation_size)
-    % Generate 16-QAM constellation points
-    base_levels = -(2 * sqrt(constellation_size)/2 - 1);
+    % Generate M-QAM constellation points
+    sqrt_M = sqrt(constellation_size);
+    base_levels = -(sqrt_M - 1);
     step_size = 2;
-    end_level = 2 * sqrt(constellation_size)/2 - 1;
+    end_level = (sqrt_M - 1);
     
-    constellation_levels = [base_levels:step_size:-1 ...
-                          1:step_size:end_level];
-    normalization_factor = 1/sqrt(10);
+    constellation_levels = base_levels:step_size:end_level;
+    
+    % Calculate normalization factor to maintain unit average symbol energy
+    % For M-QAM with equally spaced points, average power is: 2(M-1)/3
+    average_power = 2*(constellation_size-1)/3;
+    normalization_factor = 1/sqrt(average_power);
 end
 
-function gray_to_binary_map = setup_gray_coding(bits_per_symbol)
-    % Setup Gray coding mapping
-    binary_indices = 0:bits_per_symbol-1;
-    gray_map_indices = bitxor(binary_indices, ...
-                             floor(binary_indices/2));
+function gray_to_binary_map = setup_gray_coding(bits_per_half_symbol)
+    % Setup Gray coding mapping for each dimension
+    binary_indices = 0:(2^(bits_per_half_symbol)-1);
+    gray_map_indices = bitxor(binary_indices, floor(binary_indices/2));
     [~, gray_to_binary_map] = sort(gray_map_indices);
 end
 
@@ -119,11 +127,12 @@ function [detected_real_bits, detected_imag_bits] = ...
     received_real = real(received_signal)/normalization_factor;
     received_imag = imag(received_signal)/normalization_factor;
     
-    % Symbol detection
-    detected_real = limit_to_constellation(...
-        2 * floor(received_real/2) + 1, constellation_levels);
-    detected_imag = limit_to_constellation(...
-        2 * floor(received_imag/2) + 1, constellation_levels);
+    % Symbol detection using minimum distance detection
+    [~, real_indices] = min(abs(received_real - constellation_levels'), [], 1);
+    [~, imag_indices] = min(abs(received_imag - constellation_levels'), [], 1);
+    
+    detected_real = constellation_levels(real_indices);
+    detected_imag = constellation_levels(imag_indices);
     
     % Convert detected symbols to binary
     [detected_real_bits, detected_imag_bits] = ...
@@ -131,23 +140,17 @@ function [detected_real_bits, detected_imag_bits] = ...
                        params, gray_to_binary_map);
 end
 
-function limited_value = limit_to_constellation(value, ...
-                                             constellation_levels)
-    % Limit values to constellation boundaries
-    max_constellation = max(constellation_levels);
-    min_constellation = min(constellation_levels);
-    limited_value = min(max(value, min_constellation), ...
-                       max_constellation);
-end
-
 function [detected_real_bits, detected_imag_bits] = ...
         symbols_to_bits(detected_real, detected_imag, ...
                        params, gray_to_binary_map)
     % Convert detected symbols back to bits
+    sqrt_M = sqrt(params.constellation_size);
+    scale_factor = (sqrt_M - 1);
+    
     detected_real_decimal = ...
-        gray_to_binary_map(floor((detected_real + 4)/2 + 1)) - 1;
+        gray_to_binary_map(floor((detected_real + scale_factor)/2 + 1)) - 1;
     detected_imag_decimal = ...
-        gray_to_binary_map(floor((detected_imag + 4)/2 + 1)) - 1;
+        gray_to_binary_map(floor((detected_imag + scale_factor)/2 + 1)) - 1;
     
     detected_real_bits = reshape_detected_bits(...
         detected_real_decimal, ...
@@ -212,9 +215,12 @@ function plot_results(params, number_of_bit_errors)
     total_bits = params.number_of_symbols * params.bits_per_symbol;
     simulated_ber = number_of_bit_errors/total_bits;
     
-    theoretical_ber = (1/params.bits_per_symbol) * 3/2 * ...
-        erfc(sqrt(params.bits_per_symbol * 0.1 * ...
-                 (10.^(params.eb_n0_db/10))));
+    % Calculate theoretical BER for M-QAM
+    M = params.constellation_size;
+    k = log2(M);
+    eb_n0_linear = 10.^(params.eb_n0_db/10);
+    theoretical_ber = 4 * (1 - 1/sqrt(M)) * ...
+        qfunc(sqrt(3*k*eb_n0_linear/(M-1))) / k;
     
     % Create plot
     figure;
@@ -228,5 +234,6 @@ function plot_results(params, number_of_bit_errors)
     legend('Theoretical', 'Simulation');
     xlabel('Eb/N0, dB');
     ylabel('Bit Error Rate');
-    title('Bit Error Probability Curve for 16-QAM Modulation');
+    title(['Bit Error Probability Curve for ' ...
+           num2str(M) '-QAM Modulation']);
 end
